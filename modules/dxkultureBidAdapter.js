@@ -7,10 +7,11 @@ import {
   isPlainObject,
   isStr,
   isNumber,
-  isArray, logMessage
+  isArray, logMessage, mergeDeep
 } from '../src/utils.js';
 import {registerBidder} from '../src/adapters/bidderFactory.js';
 import {BANNER, VIDEO} from '../src/mediaTypes.js';
+import {ortbConverter} from '../libraries/ortbConverter/converter.js'
 
 const BIDDER_CODE = 'dxkulture';
 const DEFAULT_BID_TTL = 300;
@@ -34,6 +35,13 @@ const OPENRTB_VIDEO_PARAMS = [
   'api',
   'linearity'
 ];
+
+const converter = ortbConverter({
+  context: {
+    netRevenue: DEFAULT_NET_REVENUE,
+    ttl: DEFAULT_BID_TTL
+  }
+});
 
 export const spec = {
   code: BIDDER_CODE,
@@ -123,12 +131,13 @@ export const spec = {
     };
   },
 
-  interpretResponse: function (serverResponse) {
+  interpretResponse: function (serverResponse, request) {
     const bidResponses = [];
     const response = (serverResponse || {}).body;
-    // response is always one seat (exchange) with (optional) bids for each impression
+
     if (response && response.seatbid && response.seatbid.length === 1 && response.seatbid[0].bid && response.seatbid[0].bid.length) {
-      response.seatbid[0].bid.forEach(bid => {
+      const bids = deepAccess(response, 'seatbid.0.bid')
+      bids.forEach(bid => {
         if (bid.adm && bid.price) {
           bidResponses.push(_createBidResponse(bid));
         }
@@ -374,7 +383,7 @@ function buildVideoRequestData(bidRequest, bidderRequest) {
 
   // content
   if (videoParams.content && isPlainObject(videoParams.content)) {
-    openrtbRequest.site.content = {};
+    deepSetValue(openrtbRequest, 'site.content', {})
     const contentStringKeys = ['id', 'title', 'series', 'season', 'genre', 'contentrating', 'language', 'url'];
     const contentNumberkeys = ['episode', 'prodq', 'context', 'livestream', 'len'];
     const contentArrayKeys = ['cat'];
@@ -386,7 +395,7 @@ function buildVideoRequestData(bidRequest, bidderRequest) {
         (contentObjectKeys.indexOf(contentKey) > -1 && isPlainObject(videoParams.content[contentKey])) ||
         (contentArrayKeys.indexOf(contentKey) > -1 && isArray(videoParams.content[contentKey]) &&
           videoParams.content[contentKey].every(catStr => isStr(catStr)))) {
-        openrtbRequest.site.content[contentKey] = videoParams.content[contentKey];
+        deepSetValue(openrtbRequest, `site.content.${contentKey}`, videoParams.content[contentKey])
       } else {
         logMessage('DXKulture bid adapter validation error: ', contentKey, ' is either not supported is OpenRTB V2.5 or value is undefined');
       }
@@ -419,6 +428,8 @@ function buildBannerRequestData(bidRequests, bidderRequest) {
     }
   }));
 
+  let data = converter.toORTB({bidRequests, bidderRequest});
+
   const openrtbRequest = {
     id: bidderRequest.auctionId,
     imp: impr,
@@ -429,7 +440,14 @@ function buildBannerRequestData(bidRequests, bidderRequest) {
     },
     ext: {}
   };
-  return openrtbRequest;
+
+  mergeDeep(
+    data,
+    openrtbRequest,
+    data
+  )
+
+  return data;
 }
 
 function _createBidResponse(bid) {
